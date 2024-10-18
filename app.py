@@ -34,32 +34,44 @@ set_aws_credentials_from_secrets()
 
 # if we don't explicitly pass API keys to clinet invocation boto3
 # will use credential provider chain to look in env vars
-bedrock = boto3.client(
-    service_name='bedrock_runtime',
-    region_name='us-east-1'
-)
+client = boto3.client("bedrock-runtime", region_name="us-east-1")
 
 def invoke_bedrock_model(prompt, max_tokens=100):
-    body = json.dumps({
-        "prompt":prompt,
-        "max_tokens_to_sample":max_tokens,
-        "temperatur":0.5,
-        "top_p":0.9,
-    })
+    model_id="anthropic.claude-3-haiku-20240307-v1:0"
 
-    response = bedrock.invoke_model(
-        body=body,
-        modelId="anthropic.claude-3-5-sonnet-20240620-v1:0",
-        accept="application/json",
-        contentType="application/json"
-    )
+    native_request = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 512,
+        "temperature": 0.5,
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": prompt}],
+            }
+        ],
+    }
 
-    response_body = json.loads(response.get('body').read())
-    return response_body.get('completion')
+    # convert native request to json
+    request = json.dumps(native_request)
+
+    try:
+        response = client.invoke_model(modelId=model_id, body=request)
+    except (ClientError, Exception) as e:
+        print(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
+        exit(1)
+
+    model_response = json.loads(response['body'].read())
+    response_text = model_response['content'][0]['text']
+    return response_text
 
 @app.route('/api/question', methods=['GET'])
 def get_question():
-    prompt = "Generate a trivia question with its answer. Format: Question [question] Answer: [answer]"
+    prompt = (
+        "Generate an open-ended trivia question with its answer.\n"
+        "Format: Question [question] Answer: [answer]\n"
+        "The correct answer should NEVER be a single word.\n"
+        "There should ALWAYS be a single correct answer which is about 2 or 3 sentences long."
+    )
     response = invoke_bedrock_model(prompt)
 
     lines = response.strip().split('\n')
@@ -75,7 +87,14 @@ def check_answer():
     user_answer = data.get('user_answer')
     correct_answer = data.get('correct_answer')
 
-    prompt = f"Question: {question}\nCorrect Answer: {correct_answer}\nUser Answer: {user_answer}\nEvaluate the user's answer and provide a score out of 10:"
+    prompt = (
+        f"Question: {question}\n"
+        f"Correct Answer: {correct_answer}\n"
+        f"User Answer: {user_answer}\n"
+        "Evaluate the user's answer and provide a score out of 10."
+        "The user's answer doesn't have to be the exact same string of words as the correct answer to be considered correct."
+        "To be considered correct, the user's answer should be as semantically similar as the correct answer, and contain the correct hard facts such as names and numerical values."
+    )
     evaluation = invoke_bedrock_model(prompt)
 
     return jsonify({"evaluation": evaluation})
